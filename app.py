@@ -11,17 +11,12 @@ from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 
-# --- 0. 基礎設定與儲存機制 ---
+# --- 0. 基礎設定 ---
 tw_tz = pytz.timezone('Asia/Taipei')
-SAVE_FILE = "user_stocks_v6.json"
+SAVE_FILE = "user_stocks_v6_final.json"
 
 def load_data():
-    default_data = {
-        "stocks": [{"id": "2330", "name": "台積電"}], 
-        "tg_token": "", 
-        "tg_chat_id": "", 
-        "tg_threshold": 3.0
-    }
+    default_data = {"stocks": [{"id": "2330", "name": "台積電"}], "tg_token": "", "tg_chat_id": "", "tg_threshold": 3.0}
     if os.path.exists(SAVE_FILE):
         try:
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
@@ -30,34 +25,15 @@ def load_data():
     return default_data
 
 def save_data():
-    data = {
-        "stocks": st.session_state.my_stocks,
-        "tg_token": st.session_state.tg_token,
-        "tg_chat_id": st.session_state.tg_chat_id,
-        "tg_threshold": st.session_state.tg_threshold
-    }
+    data = {"stocks": st.session_state.my_stocks, "tg_token": st.session_state.tg_token, "tg_chat_id": st.session_state.tg_chat_id, "tg_threshold": st.session_state.tg_threshold}
     with open(SAVE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# 初始化狀態
 if 'initialized' not in st.session_state:
     config = load_data()
-    st.session_state.update({
-        'my_stocks': config["stocks"],
-        'tg_token': config["tg_token"],
-        'tg_chat_id': config["tg_chat_id"],
-        'tg_threshold': config["tg_threshold"],
-        'initialized': True,
-        'alert_history': {}
-    })
+    st.session_state.update({'my_stocks': config["stocks"], 'tg_token': config["tg_token"], 'tg_chat_id': config["tg_chat_id"], 'tg_threshold': config["tg_threshold"], 'initialized': True, 'alert_history': {}})
 
-# --- 1. 核心分析引擎 ---
-def get_market_status():
-    now_tw = datetime.now(tw_tz)
-    if now_tw.weekday() >= 5: return "💤 休市", False
-    if dt_time(9, 0) <= now_tw.time() <= dt_time(13, 35): return "⚡ 開盤中", True
-    return "🌙 已收盤", False
-
+# --- 1. 分析引擎 ---
 @st.cache_data(ttl=60)
 def fetch_and_analyze(stock_id):
     df = pd.DataFrame()
@@ -72,7 +48,6 @@ def fetch_and_analyze(stock_id):
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df = df.astype(float).ffill()
     
-    # 指標計算 (相容性版本)
     close = pd.Series(df['Close'].values.flatten(), index=df.index).astype(float)
     high = pd.Series(df['High'].values.flatten(), index=df.index).astype(float)
     low = pd.Series(df['Low'].values.flatten(), index=df.index).astype(float)
@@ -106,33 +81,27 @@ def fetch_and_analyze(stock_id):
     if last['RSI'] > 50: results.append("✅ RSI 強勢區"); score += 1
     if last['Close'] > last['BBM']: results.append("✅ 站上布林中軸"); score += 1
     
-    return {
-        "price": float(last['Close']),
-        "pct": (float(last['Close'])-float(prev['Close']))/float(prev['Close'])*100,
-        "grade": {5:"S", 4:"A", 3:"B", 2:"C", 1:"D", 0:"E"}.get(score, "E"),
-        "details": results,
-        "score": score
-    }
+    return {"price": float(last['Close']), "pct": (float(last['Close'])-float(prev['Close']))/float(prev['Close'])*100, "grade": {5:"S", 4:"A", 3:"B", 2:"C", 1:"D", 0:"E"}.get(score, "E"), "details": results, "score": score}
 
-# --- 2. 介面與功能區 ---
-st.set_page_config(page_title="台股監控 V6", layout="centered")
+# --- 2. 介面介面 ---
+st.set_page_config(page_title="台股監控 V6.1", layout="centered")
 st.title("📈 關注股票：技術分級監控")
 
-# ---【這裡就是消失的功能】---
+#【功能：新增自選股】
 with st.container(border=True):
     st.subheader("🔍 新增想要關注的股票")
-    c1, c2, c3 = st.columns([2,3,1])
-    input_id = c1.text_input("代號", placeholder="例如: 2330", key="new_stock_id")
-    input_name = c2.text_input("名稱", placeholder="例如: 台積電", key="new_stock_name")
-    if c3.button("新增"):
+    c1, c2, c3 = st.columns([2,3,1.2])
+    input_id = c1.text_input("代號", placeholder="2330", key="add_id")
+    input_name = c2.text_input("名稱", placeholder="台積電", key="add_name")
+    if c3.button("➕ 新增", use_container_width=True): # 這裡修正了可能導致語法錯誤的地方
         if input_id and input_name:
             if not any(s['id'] == input_id for s in st.session_state.my_stocks):
                 st.session_state.my_stocks.append({"id": input_id, "name": input_name})
                 save_data()
-                st.success(f"已新增 {input_name}！")
+                st.success(f"已加入 {input_name}")
                 st.rerun()
             else:
-                st.warning("股票已在名單中")
+                st.warning("股票已在清單中")
 
 # 側邊欄設定
 with st.sidebar:
@@ -140,7 +109,27 @@ with st.sidebar:
     st.session_state.tg_token = st.text_input("Bot Token", type="password", value=st.session_state.tg_token)
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
     st.session_state.tg_threshold = st.number_input("通知門檻 (%)", value=st.session_state.tg_threshold)
-    if st.button("💾 儲存設定"):
-        save_data(); st.success("已儲存")
-    st.divider()
-    if
+    if st.button("💾 儲存並刷新", use_container_width=True):
+        save_data(); st.cache_data.clear(); st.rerun()
+
+# --- 3. 股票清單顯示 ---
+st.divider()
+for idx, stock in enumerate(st.session_state.my_stocks):
+    res = fetch_and_analyze(stock['id'])
+    if res:
+        with st.container(border=True):
+            col_info, col_metric, col_del = st.columns([3, 2, 0.6])
+            with col_info:
+                st.write(f"### {stock['name']} ({stock['id']})")
+                st.write(f"等級：**{res['grade']}**")
+            with col_metric:
+                st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
+            with col_del:
+                if st.button("🗑️", key=f"del_{stock['id']}"):
+                    st.session_state.my_stocks.pop(idx)
+                    save_data(); st.rerun()
+            with st.expander("符合指標"):
+                st.write("、".join(res['details']) if res['details'] else "無指標符合")
+
+if st.button("🔄 全部重新整理"):
+    st.cache_data.clear(); st.rerun()
