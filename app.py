@@ -6,6 +6,7 @@ import pytz
 import json
 import os
 from datetime import datetime, time as dt_time
+from FinMind.data import DataLoader
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
@@ -52,31 +53,40 @@ def fetch_and_analyze(stock_id):
     low = pd.Series(df['Low'].values.flatten(), index=df.index).astype(float)
     
     try:
-        df['MA5'] = SMAIndicator(close, window=5).sma_indicator()
-        df['MA10'] = SMAIndicator(close, window=10).sma_indicator()
-        df['MA20'] = SMAIndicator(close, window=20).sma_indicator()
-        stoch = StochasticOscillator(high, low, close, window=9)
-        df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
-        df['MACD_diff'] = MACD(close, window_slow=26, window_fast=12, window_sign=9).macd_diff()
-        df['RSI'] = RSIIndicator(close, window=14).rsi()
-        df['BBM'] = BollingerBands(close, window=20).bollinger_mavg()
+        try:
+            df['MA5'] = SMAIndicator(close, window=5).sma_indicator()
+            df['MA10'] = SMAIndicator(close, window=10).sma_indicator()
+            df['MA20'] = SMAIndicator(close, window=20).sma_indicator()
+            stoch = StochasticOscillator(high, low, close, window=9)
+            df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
+            df['MACD_diff'] = MACD(close, window_slow=26, window_fast=12, window_sign=9).macd_diff()
+            df['RSI'] = RSIIndicator(close, window=14).rsi()
+            df['BBM'] = BollingerBands(close, window=20).bollinger_mavg()
+        except:
+            df['MA5'] = SMAIndicator(close, n=5).sma_indicator()
+            df['MA10'] = SMAIndicator(close, n=10).sma_indicator()
+            df['MA20'] = SMAIndicator(close, n=20).sma_indicator()
+            stoch = StochasticOscillator(high, low, close, n=9)
+            df['K']=stoch.stoch(); df['D']=stoch.stoch_signal()
+            df['MACD_diff'] = MACD(close, n_slow=26, n_fast=12, n_sign=9).macd_diff()
+            df['RSI'] = RSIIndicator(close, n=14).rsi()
+            df['BBM'] = BollingerBands(close, n=20).bollinger_mavg()
     except: return None
     
     last = df.iloc[-1]; prev = df.iloc[-2]
     score = 0
     details = []
     
-    # 判定邏輯
     if last['MA5'] > last['MA10'] > last['MA20']:
-        details.append("均線多頭排列"); score += 1
+        details.append("✅ 均線多頭排列"); score += 1
     if last['K'] > last['D'] and last['K'] > 20:
-        details.append("KD 黃金交叉"); score += 1
+        details.append("✅ KD 黃金交叉"); score += 1
     if last['MACD_diff'] > 0:
-        details.append("MACD 柱狀體轉正"); score += 1
+        details.append("✅ MACD 柱狀體轉正"); score += 1
     if last['RSI'] > 50:
-        details.append("RSI 強勢區"); score += 1
+        details.append("✅ RSI 強勢區"); score += 1
     if last['Close'] > last['BBM']:
-        details.append("站穩月線(MA20)"); score += 1
+        details.append("✅ 站穩月線(MA20)"); score += 1
         
     decision_map = {
         5: {"grade": "S (極強)", "action": "🔥 續抱/加碼", "color": "red"},
@@ -86,7 +96,7 @@ def fetch_and_analyze(stock_id):
         1: {"grade": "D (弱勢)", "action": "📉 減碼避險", "color": "gray"},
         0: {"grade": "E (極弱)", "action": "🚫 觀望不進場", "color": "black"}
     }
-    res = decision_map.get(score, decision_map[0])
+    res = decision_map.get(score)
     
     return {
         "price": float(last['Close']),
@@ -94,12 +104,12 @@ def fetch_and_analyze(stock_id):
         "grade": res["grade"],
         "action": res["action"],
         "color": res["color"],
-        "details": details, # 這裡包含了具體符合的指標
+        "details": details,
         "score": score
     }
 
 # --- 2. 介面 ---
-st.set_page_config(page_title="台股決策系統 V7.1.1", layout="centered")
+st.set_page_config(page_title="台股決策系統 V7.1", layout="centered")
 st.title("🤖 台股 AI 技術分級決策支援")
 
 with st.container(border=True):
@@ -137,10 +147,8 @@ with st.sidebar:
                        f"符合指標：{', '.join(res['details']) if res['details'] else '無'}")
                 
                 url = f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage"
-                try:
-                    requests.post(url, json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
-                    found += 1
-                except: pass
+                requests.post(url, json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
+                found += 1
         st.success(f"掃描完成，已發送 {found} 則通知")
 
 # --- 3. 顯示清單 ---
@@ -153,20 +161,16 @@ for idx, stock in enumerate(st.session_state.my_stocks):
             with col_info:
                 st.write(f"### {stock['name']} ({stock['id']})")
                 st.markdown(f"評級：`{res['grade']}`")
-                
-                # --- 修改點：在這裡顯示符合哪些指標 ---
-                if res['details']:
-                    # 用藍色標籤顯示
-                    indicator_text = " ".join([f"[:blue[{d}]]" for d in res['details']])
-                    st.markdown(f"**符合指標：** {indicator_text}")
-                else:
-                    st.markdown("**符合指標：** 無")
-                
                 st.markdown(f"**建議決策：<span style='color:{res['color']}'>{res['action']}</span>**", unsafe_allow_html=True)
-            
+                # ✅ 新增：顯示符合指標
+                if res['details']:
+                    st.markdown("**符合指標：**")
+                    for d in res['details']:
+                        st.markdown(d)
+                else:
+                    st.markdown("符合指標：**無**")
             with col_metric:
                 st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
-            
             with col_del:
                 if st.button("🗑️", key=f"del_{stock['id']}"):
                     st.session_state.my_stocks.pop(idx); save_data(); st.rerun()
