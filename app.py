@@ -8,7 +8,7 @@ from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 
-# --- 1. 核心資料存取 (沿用 V7.1 穩定邏輯) ---
+# --- 1. 核心資料存取 (V7.1 原始邏輯，絕不更動) ---
 SAVE_FILE = "user_stocks_v7.json"
 
 def load_data():
@@ -27,9 +27,12 @@ def save_data():
 
 if 'my_stocks' not in st.session_state:
     config = load_data()
-    st.session_state.update({'my_stocks': config["stocks"], 'tg_token': config["tg_token"], 'tg_chat_id': config["tg_chat_id"], 'tg_threshold': config["tg_threshold"]})
+    st.session_state.my_stocks = config["stocks"]
+    st.session_state.tg_token = config["tg_token"]
+    st.session_state.tg_chat_id = config["tg_chat_id"]
+    st.session_state.tg_threshold = config["tg_threshold"]
 
-# --- 2. 分析引擎 (核心修改：將指標判定提前至此步驟) ---
+# --- 2. 分析引擎 (回歸 V7.1 最原始狀態) ---
 @st.cache_data(ttl=60)
 def fetch_and_analyze(stock_id):
     df = pd.DataFrame()
@@ -43,67 +46,22 @@ def fetch_and_analyze(stock_id):
     if df.empty: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df = df.astype(float).ffill()
-    
-    close = pd.Series(df['Close'].values.flatten(), index=df.index)
-    try:
-        # 計算技術指標
-        ma5 = SMAIndicator(close, window=5).sma_indicator()
-        ma10 = SMAIndicator(close, window=10).sma_indicator()
-        ma20 = SMAIndicator(close, window=20).sma_indicator()
-        stoch = StochasticOscillator(df['High'], df['Low'], close, window=9)
-        k, d = stoch.stoch(), stoch.stoch_signal()
-        macd_diff = MACD(close).macd_diff()
-        rsi = RSIIndicator(close).rsi()
-        bb_m = BollingerBands(close).bollinger_mavg()
-        
-        last_ma5, last_ma10, last_ma20 = ma5.iloc[-1], ma10.iloc[-1], ma20.iloc[-1]
-        last_k, last_d = k.iloc[-1], d.iloc[-1]
-        last_macd, last_rsi, last_close, last_bbm = macd_diff.iloc[-1], rsi.iloc[-1], close.iloc[-1], bb_m.iloc[-1]
-    except: return None
-    
-    # --- 事先計算指標符合狀況 ---
-    m_list = [
-        ("均線多頭", last_ma5 > last_ma10 > last_ma20),
-        ("KD金叉", last_k > last_d and last_k > 20),
-        ("MACD轉正", last_macd > 0),
-        ("RSI強勢", last_rsi > 50),
-        ("站穩月線", last_close > last_bbm)
-    ]
-    
-    details = [f"✅{name}" for name, met in m_list if met]
-    score = sum(1 for name, met in m_list if met)
-    
-    decision_map = {
-        5: ("S (極強)", "🔥 續抱/加碼", "red"),
-        4: ("A (強勢)", "🚀 偏多持股", "orange"),
-        3: ("B (轉強)", "📈 少量試單", "green"),
-        2: ("C (盤整)", "⚖️ 暫時觀望", "blue"),
-        1: ("D (弱勢)", "📉 減碼避險", "gray"),
-        0: ("E (極弱)", "🚫 觀望不進場", "black")
-    }
-    grade, action, color = decision_map[score]
-    
-    return {
-        "price": float(last_close),
-        "pct": (float(last_close) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100,
-        "grade": grade, "action": action, "color": color, "details": details
-    }
+    return df # 直接回傳整個 DataFrame，讓網頁端自己算指標
 
-# --- 3. 介面與功能 ---
-st.set_page_config(page_title="台股監控 V7.1 Plus", layout="centered")
+# --- 3. 介面設計 ---
+st.set_page_config(page_title="台股監控 V7.1 修復版", layout="centered")
 st.title("📈 台股 AI 技術分級監控")
 
-# 管理股票
+# 新增股票
 with st.container(border=True):
-    st.subheader("🔍 管理自選股")
+    st.subheader("🔍 新增自選股")
     c1, c2, c3 = st.columns([2, 3, 1.2])
+    add_id = c1.text_input("代號", key="in_id")
+    add_name = c2.text_input("名稱", key="in_name")
     if c3.button("➕ 新增", use_container_width=True):
-        if c1.session_state.get("new_id") and c2.session_state.get("new_name"):
-            st.session_state.my_stocks.append({"id": c1.session_state.new_id, "name": c2.session_state.new_name})
+        if add_id and add_name:
+            st.session_state.my_stocks.append({"id": add_id, "name": add_name})
             save_data(); st.rerun()
-    # 這裡使用直接輸入而非 state 綁定以維持 7.1 的簡潔感
-    input_id = c1.text_input("代號", key="new_id")
-    input_name = c2.text_input("名稱", key="new_name")
 
 # 側邊欄
 with st.sidebar:
@@ -111,40 +69,53 @@ with st.sidebar:
     st.session_state.tg_token = st.text_input("Bot Token", value=st.session_state.tg_token, type="password")
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
     st.session_state.tg_threshold = st.number_input("通知門檻 (%)", value=st.session_state.tg_threshold)
-    if st.button("💾 儲存所有設定", use_container_width=True):
-        save_data(); st.success("設定已儲存！")
-    
-    st.divider()
-    
-    if st.button("🚀 測試掃描並發送通知", use_container_width=True):
-        st.cache_data.clear()
-        for s in st.session_state.my_stocks:
-            res = fetch_and_analyze(s['id'])
-            if res and abs(res['pct']) >= st.session_state.tg_threshold:
-                msg = (f"🔔 <b>{s['name']} ({s['id']})</b>\n價：{res['price']:.2f} ({res['pct']:+.2f}%)\n評級：{res['grade']}\n符合：{', '.join(res['details'])}")
-                requests.post(f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage", 
-                              json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
-        st.success("通知已處理")
+    if st.button("💾 儲存所有設定"):
+        save_data(); st.success("已存檔")
 
-# --- 4. 顯示清單 (網頁顯示邏輯) ---
+# --- 4. 顯示清單 (在這裡進行即時計算) ---
 st.divider()
 for idx, s in enumerate(st.session_state.my_stocks):
-    res = fetch_and_analyze(s['id'])
-    if res:
+    df = fetch_and_analyze(s['id'])
+    if df is not None:
+        # --- 原位計算技術指標 ---
+        close = pd.Series(df['Close'].values.flatten(), index=df.index)
+        ma5 = SMAIndicator(close, window=5).sma_indicator().iloc[-1]
+        ma10 = SMAIndicator(close, window=10).sma_indicator().iloc[-1]
+        ma20 = SMAIndicator(close, window=20).sma_indicator().iloc[-1]
+        stoch = StochasticOscillator(df['High'], df['Low'], close, window=9)
+        last_k, last_d = stoch.stoch().iloc[-1], stoch.stoch_signal().iloc[-1]
+        last_macd = MACD(close).macd_diff().iloc[-1]
+        last_rsi = RSIIndicator(close).rsi().iloc[-1]
+        last_bbm = BollingerBands(close).bollinger_mavg().iloc[-1]
+        last_price = close.iloc[-1]
+        prev_price = close.iloc[-2]
+        pct = (last_price - prev_price) / prev_price * 100
+
+        # 判定
+        details = []
+        if ma5 > ma10 > ma20: details.append("✅均線多頭")
+        if last_k > last_d and last_k > 20: details.append("✅KD金叉")
+        if last_macd > 0: details.append("✅MACD轉正")
+        if last_rsi > 50: details.append("✅RSI強勢")
+        if last_price > last_bbm: details.append("✅站穩月線")
+        
+        score = len(details)
+        decision_map = {5:("S","🔥續抱","red"), 4:("A","🚀偏多","orange"), 3:("B","📈轉強","green"), 
+                        2:("C","⚖️觀望","blue"), 1:("D","📉避險","gray"), 0:("E","🚫空方","black")}
+        grade, action, color = decision_map.get(score, ("?","?","black"))
+
+        # 渲染畫面
         with st.container(border=True):
-            col_info, col_metric, col_del = st.columns([3, 2, 0.6])
-            with col_info:
+            c_info, c_metric, c_del = st.columns([3, 2, 0.6])
+            with c_info:
                 st.write(f"### {s['name']} ({s['id']})")
-                st.markdown(f"評級：`{res['grade']}` | **建議：<span style='color:{res['color']}'>{res['action']}</span>**", unsafe_allow_html=True)
-                
-                # --- 事先算好，直接在網頁顯示指標細節 ---
-                st.write(f"📊 {' '.join(res['details']) if res['details'] else '⚠️ 無指標符合'}")
-                
-            with col_metric:
-                st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
-            with col_del:
+                st.markdown(f"評級：`{grade}` | **建議：<span style='color:{color}'>{action}</span>**", unsafe_allow_html=True)
+                st.write(f"📊 {' '.join(details) if details else '無指標符合'}")
+            with c_metric:
+                st.metric("股價", f"{last_price:.2f}", f"{pct:+.2f}%", delta_color="inverse")
+            with c_del:
                 if st.button("🗑️", key=f"del_{s['id']}"):
                     st.session_state.my_stocks.pop(idx); save_data(); st.rerun()
 
-if st.button("🔄 全部數據重整"):
+if st.button("🔄 刷新全部數據"):
     st.cache_data.clear(); st.rerun()
