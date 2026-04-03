@@ -11,7 +11,7 @@ from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 
-# --- 1. 基礎設定與資料存取 ---
+# --- 1. 核心資料存取 ---
 SAVE_FILE = "user_stocks_v7.json"
 
 def load_data():
@@ -24,41 +24,42 @@ def load_data():
     return default
 
 def save_data():
-    data = {"stocks": st.session_state.my_stocks, "tg_token": st.session_state.tg_token, 
-            "tg_chat_id": st.session_state.tg_chat_id, "tg_threshold": st.session_state.tg_threshold}
-    with open(SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    if 'my_stocks' in st.session_state:
+        data = {"stocks": st.session_state.my_stocks, "tg_token": st.session_state.tg_token, 
+                "tg_chat_id": st.session_state.tg_chat_id, "tg_threshold": st.session_state.tg_threshold}
+        with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
 
-# 初始化 Session State
+# 初始化 Session State (防禦性確保)
 conf = load_data()
 for key in ['my_stocks', 'tg_token', 'tg_chat_id', 'tg_threshold']:
     if key not in st.session_state:
         st.session_state[key] = conf.get(key, conf["stocks"] if key == 'my_stocks' else "")
 
-# --- 2. 智慧雙引擎分析 (自動判斷開盤/休盤) ---
-@st.cache_data(ttl=300) # 快取 5 分鐘，減輕 API 負擔
+# --- 2. 智慧雙引擎分析 (修復轉型錯誤) ---
+@st.cache_data(ttl=300)
 def fetch_smart_data(stock_id):
     now = datetime.now()
-    # 判斷是否為台灣開盤時間 (週一至週五 09:00 - 13:35)
+    # 判斷開盤時間 (週一至五 09:00 - 13:35)
     is_open = now.weekday() < 5 and (9, 0) <= (now.hour, now.minute) <= (13, 35)
     
     df = pd.DataFrame()
     source_label = ""
 
+    # 盤中嘗試使用 FinMind
     if is_open:
-        # 【盤中：使用 FinMind】
         source_label = "FinMind (即時)"
         try:
             dl = DataLoader()
-            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date='2024-10-01')
-            df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
+            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date='2025-01-01')
+            if not df.empty:
+                df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
         except: pass
     
-    # 如果是休盤，或者 FinMind 抓取失敗，則使用 yfinance
+    # 休盤或失敗則用 yfinance
     if df.empty:
         source_label = "yfinance (盤後/延遲)"
-        # 【防阻擋機制】：在連續抓取間加入微小延遲
-        time.sleep(1.2) 
+        time.sleep(1.2) # 防阻擋延遲
         for suffix in [".TW", ".TWO"]:
             try:
                 temp = yf.download(f"{stock_id}{suffix}", period="6mo", progress=False)
@@ -70,13 +71,24 @@ def fetch_smart_data(stock_id):
 
     if df.empty: return None
 
-    # 技術指標計算 (統一邏輯)
-    df = df.astype(float).ffill()
-    close = pd.Series(df['Close'].values.flatten(), index=df.index)
-    high = pd.Series(df['High'].values.flatten(), index=df.index)
-    low = pd.Series(df['Low'].values.flatten(), index=df.index)
-
+    # --- 【關鍵修復點：安全的資料轉型】 ---
     try:
+        # 只抓取必要的數字欄位，避免將 Date 或其他文字欄位轉成 float
+        cols_needed = ['Open', 'High', 'Low', 'Close']
+        df_clean = df[cols_needed].copy()
+        
+        # 強制將資料轉換為數字，無法轉換的會變成 NaN，然後用 ffill 補齊
+        for col in cols_needed:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+        
+        df_clean = df_clean.ffill().dropna()
+        
+        # 提取為一維 Series
+        close = df_clean['Close']
+        high = df_clean['High']
+        low = df_clean['Low']
+
+        # 技術指標
         m1 = SMAIndicator(close, 5).sma_indicator().iloc[-1] > SMAIndicator(close, 10).sma_indicator().iloc[-1] > SMAIndicator(close, 20).sma_indicator().iloc[-1]
         stoch = StochasticOscillator(high, low, close, 9)
         m2 = stoch.stoch().iloc[-1] > stoch.stoch_signal().iloc[-1] and stoch.stoch().iloc[-1] > 20
@@ -98,30 +110,31 @@ def fetch_smart_data(stock_id):
         
         return {"price": float(close.iloc[-1]), "pct": (float(close.iloc[-1])-float(close.iloc[-2]))/float(close.iloc[-2])*100,
                 "grade": grade, "action": action, "color": color, "details": details, "source": source_label}
-    except: return None
+    except Exception as e:
+        return None
 
-# --- 3. 介面設計 ---
-st.set_page_config(page_title="台股智慧監控 V7.1.3", layout="centered")
-st.title("📈 台股 AI 智慧監控 (雙引擎)")
+# --- 3. 介面 ---
+st.set_page_config(page_title="台股智慧監控 V7.1.4", layout="centered")
+st.title("📈 台股 AI 智慧監控 (雙引擎穩定版)")
 
-# 新增股票
+# 管理區
 with st.container(border=True):
     c1, c2, c3 = st.columns([2, 3, 1.2])
-    add_id = c1.text_input("代號", key="in_id")
-    add_name = c2.text_input("名稱", key="in_name")
+    in_id = c1.text_input("代號", key="stock_id")
+    in_name = c2.text_input("名稱", key="stock_name")
     if c3.button("➕ 新增", use_container_width=True):
-        if add_id and add_name:
-            st.session_state.my_stocks.append({"id": add_id, "name": add_name})
+        if in_id and in_name:
+            st.session_state.my_stocks.append({"id": in_id, "name": in_name})
             save_data(); st.rerun()
 
-# 側邊欄設定
+# 側邊欄與通知
 with st.sidebar:
     st.header("⚙️ 系統設定")
     st.session_state.tg_token = st.text_input("Bot Token", value=st.session_state.tg_token, type="password")
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
     st.session_state.tg_threshold = st.number_input("通知門檻 (%)", value=st.session_state.tg_threshold)
-    if st.button("💾 儲存並刷新"):
-        save_data(); st.cache_data.clear(); st.rerun()
+    if st.button("💾 儲存設定"):
+        save_data(); st.success("已存檔")
     
     st.divider()
     if st.button("🚀 執行即時掃描通知", use_container_width=True):
@@ -130,13 +143,13 @@ with st.sidebar:
         for s in st.session_state.my_stocks:
             res = fetch_smart_data(s['id'])
             if res and abs(res['pct']) >= st.session_state.tg_threshold:
-                msg = f"🔔 <b>【台股通知】</b>\n標的：{s['name']} ({s['id']})\n股價：{res['price']:.2f} ({res['pct']:+.2f}%)\n評級：{res['grade']}\n數據源：{res['source']}"
+                msg = f"🔔 標的：{s['name']} ({s['id']})\n價：{res['price']:.2f} ({res['pct']:+.2f}%)\n評級：{res['grade']}\n符合：{', '.join(res['details'])}"
                 requests.post(f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage", 
                               json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
                 found += 1
-        st.success(f"掃描完成，送出 {found} 則通知")
+        st.success(f"完成，送出 {found} 則")
 
-# --- 4. 顯示清單 ---
+# 顯示列表
 st.divider()
 for idx, s in enumerate(st.session_state.my_stocks):
     res = fetch_smart_data(s['id'])
@@ -152,3 +165,6 @@ for idx, s in enumerate(st.session_state.my_stocks):
             with col_d:
                 if st.button("🗑️", key=f"del_{s['id']}"):
                     st.session_state.my_stocks.pop(idx); save_data(); st.rerun()
+
+if st.button("🔄 手動刷新"):
+    st.cache_data.clear(); st.rerun()
