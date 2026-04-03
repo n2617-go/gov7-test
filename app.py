@@ -162,13 +162,9 @@ for idx, stock in enumerate(st.session_state.my_stocks):
                 st.write(f"### {stock['name']} ({stock['id']})")
                 st.markdown(f"評級：`{res['grade']}`")
                 st.markdown(f"**建議決策：<span style='color:{res['color']}'>{res['action']}</span>**", unsafe_allow_html=True)
-                # ✅ 新增：顯示符合指標
-                if res['details']:
-                    st.markdown("**符合指標：**")
-                    for d in res['details']:
-                        st.markdown(d)
-                else:
-                    st.markdown("符合指標：**無**")
+                # ✅ 新增：顯示符合指標（一行緊湊版）
+                indicators = "　".join(res['details']) if res['details'] else "無"
+                st.markdown(f"符合指標：{indicators}")
             with col_metric:
                 st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
             with col_del:
