@@ -31,7 +31,14 @@ def save_data():
 
 if 'initialized' not in st.session_state:
     config = load_data()
-    st.session_state.update({'my_stocks': config["stocks"], 'tg_token': config["tg_token"], 'tg_chat_id': config["tg_chat_id"], 'tg_threshold': config["tg_threshold"], 'initialized': True, 'alert_history': {}})
+    st.session_state.update({
+        'my_stocks': config["stocks"], 
+        'tg_token': config["tg_token"], 
+        'tg_chat_id': config["tg_chat_id"], 
+        'tg_threshold': config["tg_threshold"], 
+        'initialized': True, 
+        'alert_history': {}
+    })
 
 # --- 1. 分析引擎 ---
 @st.cache_data(ttl=60)
@@ -83,8 +90,8 @@ def fetch_and_analyze(stock_id):
     
     return {"price": float(last['Close']), "pct": (float(last['Close'])-float(prev['Close']))/float(prev['Close'])*100, "grade": {5:"S", 4:"A", 3:"B", 2:"C", 1:"D", 0:"E"}.get(score, "E"), "details": results, "score": score}
 
-# --- 2. 介面介面 ---
-st.set_page_config(page_title="台股監控 V6.1", layout="centered")
+# --- 2. 介面 ---
+st.set_page_config(page_title="台股監控 V6.2", layout="centered")
 st.title("📈 關注股票：技術分級監控")
 
 #【功能：新增自選股】
@@ -93,7 +100,7 @@ with st.container(border=True):
     c1, c2, c3 = st.columns([2,3,1.2])
     input_id = c1.text_input("代號", placeholder="2330", key="add_id")
     input_name = c2.text_input("名稱", placeholder="台積電", key="add_name")
-    if c3.button("➕ 新增", use_container_width=True): # 這裡修正了可能導致語法錯誤的地方
+    if c3.button("➕ 新增", use_container_width=True):
         if input_id and input_name:
             if not any(s['id'] == input_id for s in st.session_state.my_stocks):
                 st.session_state.my_stocks.append({"id": input_id, "name": input_name})
@@ -109,8 +116,41 @@ with st.sidebar:
     st.session_state.tg_token = st.text_input("Bot Token", type="password", value=st.session_state.tg_token)
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
     st.session_state.tg_threshold = st.number_input("通知門檻 (%)", value=st.session_state.tg_threshold)
+    
     if st.button("💾 儲存並刷新", use_container_width=True):
         save_data(); st.cache_data.clear(); st.rerun()
+    
+    st.divider()
+    
+    # ---【重新加回：測試連線掃描按鈕】---
+    if st.button("🚀 手動測試連線並掃描通知", use_container_width=True):
+        if not st.session_state.tg_token or not st.session_state.tg_chat_id:
+            st.error("請先填寫 Telegram Token 與 Chat ID")
+        else:
+            st.cache_data.clear() # 強制抓最新數據
+            found_count = 0
+            with st.spinner("正在掃描清單並嘗試發送通知..."):
+                for s in st.session_state.my_stocks:
+                    res = fetch_and_analyze(s['id'])
+                    # 檢查是否符合漲跌幅門檻
+                    if res and abs(res['pct']) >= st.session_state.tg_threshold:
+                        msg = (f"🔔 <b>【手動連線測試】</b>\n\n"
+                               f"標的：{s['name']} ({s['id']})\n"
+                               f"目前漲跌：<b>{res['pct']:+.2f}%</b>\n"
+                               f"技術評級：<b>{res['grade']}</b>\n\n"
+                               f"符合指標：{', '.join(res['details']) if res['details'] else '無'}")
+                        
+                        try:
+                            url = f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage"
+                            requests.post(url, json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"}, timeout=5)
+                            found_count += 1
+                        except Exception as e:
+                            st.error(f"發送失敗: {e}")
+            
+            if found_count > 0:
+                st.success(f"測試完成！已為 {found_count} 檔符合門檻的股票發送通知。")
+            else:
+                st.warning("掃描完成，但目前清單中沒有股票達到通知門檻。")
 
 # --- 3. 股票清單顯示 ---
 st.divider()
