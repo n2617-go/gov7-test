@@ -5,33 +5,56 @@ import requests
 import pytz
 import json
 import os
-from datetime import datetime, time as dt_time
-from FinMind.data import DataLoader
+from datetime import datetime
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import BollingerBands
 
-# --- 0. 基礎設定 ---
+# --- 0. 基礎設定與修復核心 ---
 tw_tz = pytz.timezone('Asia/Taipei')
 SAVE_FILE = "user_stocks_v7.json"
 
 def load_data():
-    default_data = {"stocks": [{"id": "2330", "name": "台積電"}], "tg_token": "", "tg_chat_id": "", "tg_threshold": 3.0}
+    # 預設資料包含台積電
+    default_data = {
+        "stocks": [{"id": "2330", "name": "台積電"}], 
+        "tg_token": "", 
+        "tg_chat_id": "", 
+        "tg_threshold": 3.0
+    }
     if os.path.exists(SAVE_FILE):
         try:
             with open(SAVE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: pass
+                data = json.load(f)
+                # 確保 stocks 欄位存在且不為空，否則補回台積電
+                if not data.get("stocks"):
+                    data["stocks"] = default_data["stocks"]
+                return data
+        except Exception as e:
+            st.error(f"讀取存檔失敗: {e}")
     return default_data
 
 def save_data():
-    data = {"stocks": st.session_state.my_stocks, "tg_token": st.session_state.tg_token, "tg_chat_id": st.session_state.tg_chat_id, "tg_threshold": st.session_state.tg_threshold}
-    with open(SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    data = {
+        "stocks": st.session_state.my_stocks,
+        "tg_token": st.session_state.tg_token,
+        "tg_chat_id": st.session_state.tg_chat_id,
+        "tg_threshold": st.session_state.tg_threshold
+    }
+    try:
+        with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        st.error(f"儲存檔案失敗: {e}")
 
-if 'initialized' not in st.session_state:
+# 初始化狀態 (關鍵修復：確保每次啟動都重讀檔案)
+if 'initialized' not in st.session_state or st.button("🔌 重啟系統"):
     config = load_data()
-    st.session_state.update({'my_stocks': config["stocks"], 'tg_token': config["tg_token"], 'tg_chat_id': config["tg_chat_id"], 'tg_threshold': config["tg_threshold"], 'initialized': True})
+    st.session_state.my_stocks = config["stocks"]
+    st.session_state.tg_token = config["tg_token"]
+    st.session_state.tg_chat_id = config["tg_chat_id"]
+    st.session_state.tg_threshold = config["tg_threshold"]
+    st.session_state.initialized = True
 
 # --- 1. 分析引擎 ---
 @st.cache_data(ttl=60)
@@ -44,6 +67,7 @@ def fetch_and_analyze(stock_id):
                 df = temp_df
                 break
         except: continue
+    
     if df.empty: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df = df.astype(float).ffill()
@@ -65,13 +89,12 @@ def fetch_and_analyze(stock_id):
     
     last = df.iloc[-1]; prev = df.iloc[-2]
     
-    # 建立指標清單 (名稱, 判斷結果, 意義)
     check_list = [
-        ("均線多頭", last['MA5'] > last['MA10'] > last['MA20'], "MA5 > 10 > 20"),
-        ("KD黃金交叉", last['K'] > last['D'] and last['K'] > 20, "K > D 且離超賣區"),
-        ("MACD轉正", last['MACD_diff'] > 0, "柱狀體 OSC > 0"),
-        ("RSI強勢", last['RSI'] > 50, "RSI(14) > 50"),
-        ("站穩月線", last['Close'] > last['BBM'], "收盤價 > 布林中軸")
+        ("均線多頭", last['MA5'] > last['MA10'] > last['MA20'], "多頭排列"),
+        ("KD黃金交叉", last['K'] > last['D'] and last['K'] > 20, "攻擊動能"),
+        ("MACD轉正", last['MACD_diff'] > 0, "波段向上"),
+        ("RSI強勢", last['RSI'] > 50, "買氣旺盛"),
+        ("站穩月線", last['Close'] > last['BBM'], "生命線支撐")
     ]
     
     score = sum(1 for _, res, _ in check_list if res)
@@ -94,71 +117,69 @@ def fetch_and_analyze(stock_id):
         "action": res["action"],
         "color": res["color"],
         "details": details,
-        "check_list": check_list, # 傳回完整清單供網頁顯示
+        "check_list": check_list,
         "score": score
     }
 
 # --- 2. 介面 ---
-st.set_page_config(page_title="台股決策系統 V7.2", layout="centered")
+st.set_page_config(page_title="台股決策系統 V7.3", layout="centered")
 st.title("🤖 台股 AI 技術分級監控")
 
-# 新增股票
+#【修復：新增股票功能】
 with st.container(border=True):
+    st.subheader("🔍 管理自選股清單")
     c1, c2, c3 = st.columns([2,3,1.2])
-    input_id = c1.text_input("代號", key="add_id")
-    input_name = c2.text_input("名稱", key="add_name")
-    if c3.button("➕ 新增", use_container_width=True):
-        if input_id and input_name:
-            if not any(s['id'] == input_id for s in st.session_state.my_stocks):
-                st.session_state.my_stocks.append({"id": input_id, "name": input_name})
-                save_data(); st.rerun()
+    new_id = c1.text_input("代號", placeholder="例如: 2454", key="input_id")
+    new_name = c2.text_input("名稱", placeholder="例如: 聯發科", key="input_name")
+    if c3.button("➕ 新增股票", use_container_width=True):
+        if new_id and new_name:
+            if not any(s['id'] == new_id for s in st.session_state.my_stocks):
+                st.session_state.my_stocks.append({"id": new_id, "name": new_name})
+                save_data() # 立即存檔
+                st.success(f"已成功加入 {new_name}！")
+                st.rerun() # 強制刷新畫面
+            else:
+                st.warning("此股票已在清單中")
+        else:
+            st.error("請填寫代號與名稱")
 
-# 側邊欄通知
+# 側邊欄設定
 with st.sidebar:
-    st.header("⚙️ 通知設定")
-    st.session_state.tg_token = st.text_input("Bot Token", type="password", value=st.session_state.tg_token)
+    st.header("⚙️ 系統設定")
+    st.session_state.tg_token = st.text_input("Telegram Bot Token", value=st.session_state.tg_token, type="password")
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
-    st.session_state.tg_threshold = st.number_input("通知門檻 (%)", value=st.session_state.tg_threshold)
-    if st.button("💾 儲存並刷新"):
-        save_data(); st.cache_data.clear(); st.rerun()
-    st.divider()
-    if st.button("🚀 手動掃描發送通知", use_container_width=True):
-        st.cache_data.clear()
-        found = 0
-        for s in st.session_state.my_stocks:
-            res = fetch_and_analyze(s['id'])
-            if res and abs(res['pct']) >= st.session_state.tg_threshold:
-                msg = (f"🔔 <b>【AI 決策通知】</b>\n\n標的：<b>{s['name']} ({s['id']})</b>\n股價：<b>{res['price']:.2f}</b> ({res['pct']:+.2f}%)\n"
-                       f"評級：{res['grade']}\n建議：<b>{res['action']}</b>\n\n符合：{', '.join(res['details'])}")
-                requests.post(f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage", 
-                              json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
-                found += 1
-        st.success(f"已發送 {found} 則通知")
+    st.session_state.tg_threshold = st.number_input("漲跌通知門檻 (%)", value=st.session_state.tg_threshold)
+    if st.button("💾 儲存所有設定", use_container_width=True):
+        save_data(); st.success("設定已儲存！"); st.rerun()
 
-# --- 3. 股票清單顯示 ---
+# --- 3. 顯示清單 ---
 st.divider()
-for idx, stock in enumerate(st.session_state.my_stocks):
-    res = fetch_and_analyze(stock['id'])
-    if res:
-        with st.container(border=True):
-            col_main, col_del = st.columns([5, 0.5])
-            with col_main:
-                c1, c2 = st.columns([3, 2])
-                c1.write(f"### {stock['name']} ({stock['id']})")
-                c1.markdown(f"評級：**{res['grade']}** | 建議：<span style='color:{res['color']}'>**{res['action']}**</span>", unsafe_allow_html=True)
-                c2.metric("最新股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
-                
-                # --- 新增：網頁直接顯示指標標籤 ---
-                st.write("符合指標：")
-                cols = st.columns(len(res['check_list']))
-                for i, (name, is_met, hint) in enumerate(res['check_list']):
-                    if is_met:
-                        cols[i].markdown(f":green[✔ {name}]")
-                    else:
-                        cols[i].markdown(f":gray[✘ {name}]")
-            with col_del:
-                if st.button("🗑️", key=f"del_{stock['id']}"):
-                    st.session_state.my_stocks.pop(idx); save_data(); st.rerun()
+if not st.session_state.my_stocks:
+    st.info("目前清單為空，請從上方新增股票。")
+else:
+    for idx, stock in enumerate(st.session_state.my_stocks):
+        res = fetch_and_analyze(stock['id'])
+        if res:
+            with st.container(border=True):
+                col_main, col_del = st.columns([5, 0.5])
+                with col_main:
+                    c1, c2 = st.columns([3, 2])
+                    c1.write(f"### {stock['name']} ({stock['id']})")
+                    c1.markdown(f"評級：**{res['grade']}** | 建議：<span style='color:{res['color']}'>**{res['action']}**</span>", unsafe_allow_html=True)
+                    c2.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
+                    
+                    st.write("符合指標：")
+                    indicator_cols = st.columns(len(res['check_list']))
+                    for i, (name, is_met, hint) in enumerate(res['check_list']):
+                        if is_met:
+                            indicator_cols[i].markdown(f":green[✔ {name}]")
+                        else:
+                            indicator_cols[i].markdown(f":gray[✘ {name}]")
+                with col_del:
+                    if st.button("🗑️", key=f"del_{stock['id']}"):
+                        st.session_state.my_stocks.pop(idx)
+                        save_data()
+                        st.rerun()
 
-if st.button("🔄 全部重新整理"):
+if st.button("🔄 全球即時數據刷新"):
     st.cache_data.clear(); st.rerun()
