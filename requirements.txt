@@ -5,4 +5,5 @@ pandas
 requests
 pytz
 tqdm
-pandas_ta
+# 從 GitHub 安裝開發版，通常對新環境支援較好
+https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
