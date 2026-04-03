@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import time
 import random
 import requests
@@ -11,9 +10,14 @@ import os
 from datetime import datetime, time as dt_time
 from FinMind.data import DataLoader
 
+# 引入 ta 套件的各個指標模組
+from ta.trend import SMAIndicator, MACD
+from ta.momentum import RSIIndicator, StochasticsOscillator
+from ta.volatility import BollingerBands
+
 # --- 0. 基礎設定 ---
 tw_tz = pytz.timezone('Asia/Taipei')
-SAVE_FILE = "my_stocks_v4_settings.json"
+SAVE_FILE = "my_stocks_v4_stable.json"
 
 def load_data():
     if os.path.exists(SAVE_FILE):
@@ -54,9 +58,8 @@ def get_market_status():
 
 @st.cache_data(ttl=60)
 def fetch_and_analyze(stock_id):
-    """結合長短資料並計算五大指標"""
-    # 1. 抓取 yfinance 歷史資料 (100天)
     df = pd.DataFrame()
+    # 1. 抓取 yfinance 歷史資料
     for suffix in [".TW", ".TWO"]:
         try:
             temp_df = yf.download(f"{stock_id}{suffix}", period="6mo", progress=False)
@@ -68,7 +71,7 @@ def fetch_and_analyze(stock_id):
     if df.empty: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
-    # 2. 盤中結合 FinMind 最新價
+    # 2. 盤中結合 FinMind
     status_label, is_open = get_market_status()
     if is_open:
         try:
@@ -85,41 +88,52 @@ def fetch_and_analyze(stock_id):
                 df = pd.concat([df, new_data]).drop_duplicates(keep='last')
         except: pass
 
-    # 3. 技術指標運算 (pandas_ta)
-    df.ta.ma(length=5, append=True)
-    df.ta.ma(length=10, append=True)
-    df.ta.ma(length=20, append=True)
-    df.ta.kd(append=True)
-    df.ta.macd(append=True)
-    df.ta.rsi(length=14, append=True)
-    df.ta.bbands(length=20, std=2, append=True)
+    # 3. 技術指標運算 (改用 ta 套件寫法)
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    
+    # 均線
+    df['MA5'] = SMAIndicator(close, window=5).sma_indicator()
+    df['MA10'] = SMAIndicator(close, window=10).sma_indicator()
+    df['MA20'] = SMAIndicator(close, window=20).sma_indicator()
+    
+    # KD (9, 3, 3)
+    stoch = StochasticsOscillator(high, low, close, window=9, smooth_window=3)
+    df['K'] = stoch.stoch()
+    df['D'] = stoch.stoch_signal()
+    
+    # MACD
+    macd_obj = MACD(close)
+    df['MACD_diff'] = macd_obj.macd_diff() # 柱狀體
+    
+    # RSI
+    df['RSI'] = RSIIndicator(close, window=14).rsi()
+    
+    # 布林通道
+    bb = BollingerBands(close, window=20, window_dev=2)
+    df['BBM'] = bb.bollinger_mavg() # 中線
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 4. 五大指標判定
+    # 4. 五大指標判定 (S/A/B/C/D 分級)
     results = []
     score = 0
     
-    # 指標 1: MA 多頭排列
-    if last['MA_5'] > last['MA_10'] > last['MA_20']:
+    if last['MA5'] > last['MA10'] > last['MA20']:
         results.append("✅ 均線：短中長期多頭排列 (助漲力強)"); score += 1
-    # 指標 2: KD 向上
-    if last['STOCHk_9_3_3'] > last['STOCHd_9_3_3']:
+    if last['K'] > last['D'] and last['K'] > 20:
         results.append("✅ KD：K值大於D值 (多方攻擊)"); score += 1
-    # 指標 3: MACD 紅柱
-    if last['MACDs_12_26_9'] > 0:
-        results.append("✅ MACD：位於零軸上方 (波段偏多)"); score += 1
-    # 指標 4: RSI 強勢
-    if last['RSI_14'] > 50:
-        results.append("✅ RSI：站上強勢區 (買盤積極)"); score += 1
-    # 指標 5: 布林中軸
-    if last['Close'] > last['BBM_20_2.0']:
-        results.append("✅ 布林：股價站穩中軸 (支撐確立)"); score += 1
+    if last['MACD_diff'] > 0:
+        results.append("✅ MACD：柱狀體為正 (趨勢偏多)"); score += 1
+    if last['RSI'] > 50:
+        results.append("✅ RSI：站上 50 強勢區 (買盤積極)"); score += 1
+    if last['Close'] > last['BBM']:
+        results.append("✅ 布林：站穩中軸 MA20 (支撐確立)"); score += 1
         
-    grade = {5: "S (極強)", 4: "A (強勢)", 3: "B (轉強)", 2: "C (盤整)", 1: "D (弱勢)", 0: "E (空方)"}.get(score, "E")
+    grade = {5: "S (極強)", 4: "A (強勢)", 3: "B (轉強)", 2: "C (盤整)", 1: "D (弱勢)", 0: "E (極弱)"}.get(score, "E")
     
-    # 策略建議
     strategy = "觀望為宜"
     if score >= 4: strategy = "分批佈局 / 持股續抱"
     elif score == 3: strategy = "少量試單 / 觀察突破"
@@ -134,17 +148,16 @@ def fetch_and_analyze(stock_id):
         "score": score
     }
 
-# --- 2. 介面與通知 ---
+# --- 2. 介面與顯示 ---
 
 st.title("📈 台股 AI 技術分級監控")
 status_label, is_open = get_market_status()
 st.info(f"當前狀態：{status_label}")
 
-with st.expander("🛠️ 系統設定"):
-    # 新增股票
+with st.expander("🛠️ 管理股票與通知"):
     c1, c2, c3 = st.columns([2,3,1])
-    nid = c1.text_input("代號")
-    nname = c2.text_input("名稱")
+    nid = c1.text_input("股票代號")
+    nname = c2.text_input("顯示名稱")
     if c3.button("新增"):
         if nid and nname:
             st.session_state.my_stocks.append({"id": nid, "name": nname})
@@ -154,12 +167,11 @@ with st.expander("🛠️ 系統設定"):
     st.session_state.tg_token = st.text_input("Bot Token", type="password", value=st.session_state.tg_token)
     st.session_state.tg_chat_id = st.text_input("Chat ID", value=st.session_state.tg_chat_id)
     st.session_state.tg_threshold = st.number_input("通知門檻 %", value=st.session_state.tg_threshold)
-    if st.button("💾 儲存並發送測試"):
+    if st.button("💾 儲存設定"):
         save_data()
-        requests.post(f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage", 
-                      json={"chat_id": st.session_state.tg_chat_id, "text": "🔔 系統設定已更新並連線成功！"})
+        st.success("設定已儲存！")
 
-# --- 3. 監控顯示 ---
+# --- 3. 監控迴圈 ---
 
 for idx, stock in enumerate(st.session_state.my_stocks):
     res = fetch_and_analyze(stock['id'])
@@ -172,14 +184,14 @@ for idx, stock in enumerate(st.session_state.my_stocks):
             with col2:
                 st.metric("股價", f"{res['price']:.2f}", f"{res['pct']:+.2f}%", delta_color="inverse")
             
-            with st.expander("查看技術面細節"):
+            with st.expander("查看指標詳情"):
                 for d in res['details']: st.write(d)
                 st.warning(f"💡 策略建議：{res['strategy']}")
             
-            if st.button("🗑️", key=f"del_{stock['id']}"):
+            if st.button("🗑️ 刪除", key=f"del_{stock['id']}"):
                 st.session_state.my_stocks.pop(idx); save_data(); st.rerun()
 
-            # --- 自動通知邏輯 (方案 A) ---
+            # --- 自動通知邏輯 ---
             if is_open and abs(res['pct']) >= st.session_state.tg_threshold:
                 key = f"{stock['id']}_{datetime.now(tw_tz).strftime('%Y%m%d')}"
                 if key not in st.session_state.alert_history:
@@ -194,11 +206,6 @@ for idx, stock in enumerate(st.session_state.my_stocks):
                     url = f"https://api.telegram.org/bot{st.session_state.tg_token}/sendMessage"
                     requests.post(url, json={"chat_id": st.session_state.tg_chat_id, "text": msg, "parse_mode": "HTML"})
                     st.session_state.alert_history[key] = True
-                    st.toast(f"已發送 {stock['name']} 通知")
-        else:
-            st.error(f"無法讀取 {stock['id']}")
 
-st.divider()
 if st.button("🔄 立即刷新所有指標"):
     st.cache_data.clear(); st.rerun()
-st.caption(f"最後更新：{datetime.now(tw_tz).strftime('%Y-%m-%d %H:%M:%S')}")
