@@ -5,4 +5,4 @@ pandas
 requests
 pytz
 tqdm
-pandas_ta
+ta
